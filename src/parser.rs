@@ -129,6 +129,12 @@ pub enum Condition {
     FileFieldMatches(FileField, String, bool),
     /// FILENAME|FILEPATH|FILEDIR|FILEEXT LIKE "pattern"
     FileFieldLike(FileField, String, bool),
+    // --- Generic column expression conditions (for functions in WHERE) ---
+    /// LOWER(col) = "value", TRIM(col) CONTAINS "x", etc.
+    ExprEquals(ColumnExpr, String, bool),
+    ExprContains(ColumnExpr, String, bool),
+    ExprMatches(ColumnExpr, String, bool),
+    ExprLike(ColumnExpr, String, bool),
     // --- LEN() function ---
     /// LEN(col) <op> N
     LenCmp(ColumnExpr, CmpOp, usize),
@@ -893,7 +899,65 @@ impl Parser {
         Ok(WhereClause::Single(cond))
     }
 
+    fn parse_expr_condition(&mut self, expr: ColumnExpr) -> Result<Condition> {
+        let op = self.advance()?.clone();
+        match &op {
+            Token::Eq => {
+                let val = self.expect_string()?;
+                Ok(Condition::ExprEquals(expr, val, false))
+            }
+            Token::Neq => {
+                let val = self.expect_string()?;
+                Ok(Condition::ExprEquals(expr, val, true))
+            }
+            Token::Keyword(k) if k.eq_ignore_ascii_case("CONTAINS") => {
+                let val = self.expect_string()?;
+                Ok(Condition::ExprContains(expr, val, false))
+            }
+            Token::Keyword(k) if k.eq_ignore_ascii_case("MATCHES") => {
+                let val = self.expect_string()?;
+                Ok(Condition::ExprMatches(expr, val, false))
+            }
+            Token::Keyword(k) if k.eq_ignore_ascii_case("LIKE") => {
+                let val = self.expect_string()?;
+                Ok(Condition::ExprLike(expr, val, false))
+            }
+            Token::Keyword(k) if k.eq_ignore_ascii_case("NOT") => {
+                let next = self.advance()?.clone();
+                match &next {
+                    Token::Keyword(kk) if kk.eq_ignore_ascii_case("CONTAINS") => {
+                        let val = self.expect_string()?;
+                        Ok(Condition::ExprContains(expr, val, true))
+                    }
+                    Token::Keyword(kk) if kk.eq_ignore_ascii_case("MATCHES") => {
+                        let val = self.expect_string()?;
+                        Ok(Condition::ExprMatches(expr, val, true))
+                    }
+                    Token::Keyword(kk) if kk.eq_ignore_ascii_case("LIKE") => {
+                        let val = self.expect_string()?;
+                        Ok(Condition::ExprLike(expr, val, true))
+                    }
+                    other => Err(FQueryError::Parse(format!(
+                        "expected CONTAINS, MATCHES, or LIKE after NOT, got {other:?}"
+                    ))),
+                }
+            }
+            other => Err(FQueryError::Parse(format!(
+                "expected operator after expression, got {other:?}"
+            ))),
+        }
+    }
+
     fn parse_condition(&mut self) -> Result<Condition> {
+        // Check for function-wrapped columns: LOWER(col), UPPER(col), TRIM(col), etc.
+        if let Some(Token::Keyword(k)) = self.peek() {
+            let upper = k.to_ascii_uppercase();
+            if matches!(upper.as_str(), "LOWER" | "UPPER" | "TRIM" | "TRIMSTART" | "TRIMEND" | "SPLIT" | "REPLACE") {
+                let expr = self.parse_single_column()?;
+                return self.parse_expr_condition(expr);
+            }
+        }
+
         let field = self.advance()?.clone();
         match &field {
             Token::Keyword(k) if k.eq_ignore_ascii_case("LINE") => {

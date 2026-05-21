@@ -621,6 +621,27 @@ fn matches_condition(
             let len = val_str.chars().count();
             Ok(cmp_op_eval(op, &len, val))
         }
+        Condition::ExprEquals(expr, val, negated) => {
+            let v = resolve_column_in_where(expr, line, lineno, file_info) == *val;
+            Ok(if *negated { !v } else { v })
+        }
+        Condition::ExprContains(expr, val, negated) => {
+            let v = resolve_column_in_where(expr, line, lineno, file_info).contains(val.as_str());
+            Ok(if *negated { !v } else { v })
+        }
+        Condition::ExprMatches(expr, pat, negated) => {
+            let re = compiled_regexes.get(pat)
+                .ok_or_else(|| FQueryError::Parse(format!("regex not compiled: {pat}")))?;
+            let v = re.is_match(&resolve_column_in_where(expr, line, lineno, file_info));
+            Ok(if *negated { !v } else { v })
+        }
+        Condition::ExprLike(expr, pat, negated) => {
+            let re_pat = like_to_regex(pat);
+            let re = compiled_regexes.get(&re_pat)
+                .ok_or_else(|| FQueryError::Parse(format!("like regex not compiled: {pat}")))?;
+            let v = re.is_match(&resolve_column_in_where(expr, line, lineno, file_info));
+            Ok(if *negated { !v } else { v })
+        }
         Condition::FileSizeBetween(low, high) => {
             Ok(file_info.size >= *low && file_info.size <= *high)
         }
@@ -692,10 +713,15 @@ fn collect_patterns(clause: &WhereClause, patterns: &mut Vec<String>) {
                     patterns.push(p.clone());
                 }
             }
-            Condition::LineLike(p, _) | Condition::FileFieldLike(_, p, _) => {
+            Condition::LineLike(p, _) | Condition::FileFieldLike(_, p, _) | Condition::ExprLike(_, p, _) => {
                 let re_pat = like_to_regex(p);
                 if !patterns.contains(&re_pat) {
                     patterns.push(re_pat);
+                }
+            }
+            Condition::ExprMatches(_, p, _) => {
+                if !patterns.contains(p) {
+                    patterns.push(p.clone());
                 }
             }
             _ => {}
@@ -734,6 +760,10 @@ fn is_file_condition(c: &Condition) -> bool {
         | Condition::ModifiedCmp(..)
         | Condition::CreatedCmp(..) => true,
         Condition::LenCmp(col, _, _) => !is_line_level_column(&col.col),
+        Condition::ExprEquals(col, _, _)
+        | Condition::ExprContains(col, _, _)
+        | Condition::ExprMatches(col, _, _)
+        | Condition::ExprLike(col, _, _) => !is_line_level_column(&col.col),
         _ => false,
     }
 }
