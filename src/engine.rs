@@ -790,20 +790,26 @@ fn eval_file_filter(clause: &WhereClause, file_info: &FileInfo, regexes: &Compil
         }
         WhereClause::Single(_) => Ok(None),
         WhereClause::And(parts) => {
+            let mut all_true = true;
             for p in parts {
-                if let Some(false) = eval_file_filter(p, file_info, regexes)? {
-                    return Ok(Some(false));
+                match eval_file_filter(p, file_info, regexes)? {
+                    Some(false) => return Ok(Some(false)),
+                    Some(true) => {}
+                    None => { all_true = false; }
                 }
             }
-            Ok(None)
+            if all_true { Ok(Some(true)) } else { Ok(None) }
         }
         WhereClause::Or(parts) => {
+            let mut all_false = true;
             for p in parts {
-                if let Some(true) = eval_file_filter(p, file_info, regexes)? {
-                    return Ok(Some(true));
+                match eval_file_filter(p, file_info, regexes)? {
+                    Some(true) => return Ok(Some(true)),
+                    Some(false) => {}
+                    None => { all_false = false; }
                 }
             }
-            Ok(None)
+            if all_false { Ok(Some(false)) } else { Ok(None) }
         }
         WhereClause::Not(inner) => {
             match eval_file_filter(inner, file_info, regexes)? {
